@@ -464,26 +464,27 @@ combine_results <- function(results_list) {
 # PLOTTING FUNCTIONS
 # =============================================================================
 
-# Custom color palette: Pinks for Long COVID, Blues for Recovered, Teal for Pool
+# Custom color palette: Vibrant, distinct colors for each donor
+# Warm tones for Long COVID, Cool tones for Recovered, Distinct for Pool
 DONOR_COLORS <- c(
-  # Long COVID donors - pink/rose hues
-  "LC01" = "#D4A5A5",
-  "LC02" = "#E8B4B8",
-  "LC03" = "#C9787A",
-  "LC04" = "#B56576",
-  # Recovered donors - powdery blue hues
-  "Rec01" = "#A5C4D4",
-  "Rec02" = "#89B0C4",
-  "Rec03" = "#6B9BB5",
-  # Pool - teal/green
-  "POOL" = "#7BA3A8"
+  # Long COVID donors - distinct warm colors
+  "LC01" = "#E63946",
+  "LC02" = "#F4A261",
+  "LC03" = "#9D4EDD",
+  "LC04" = "#E76F51",
+  # Recovered donors - distinct cool colors
+  "Rec01" = "#2A9D8F",
+  "Rec02" = "#264653",
+  "Rec03" = "#3A86FF",
+  # Pool - distinct green/gold
+  "POOL" = "#6A994E"
 )
 
 # Group colors (for group-level summaries)
 GROUP_COLORS <- c(
-  "Long COVID" = "#C9787A",
-  "Recovered" = "#89B0C4",
-  "Pool" = "#7BA3A8"
+  "Long COVID" = "#E63946",
+  "Recovered" = "#2A9D8F",
+  "Pool" = "#6A994E"
 )
 
 #' Prepare plot data - handles slurry and filters vessels
@@ -725,6 +726,301 @@ plot_all_targets <- function(data, vessel = "V1") {
   return(p)
 }
 
+#' Create bar chart comparing baseline (slurry) copy numbers across donors
+#'
+#' @param data Summary data frame
+#' @param target Bacterial target to plot (or NULL for all targets faceted)
+#' @return ggplot object
+plot_slurry_comparison <- function(data, target = NULL) {
+
+  # Filter for slurry samples only
+  plot_data <- data %>%
+    filter(Vessel == "Slurry" | Day == "Slurry" | Day_Numeric == 0)
+
+  if (!is.null(target)) {
+    plot_data <- plot_data %>% filter(Bacterial_Target == target)
+  }
+
+  if (nrow(plot_data) == 0) {
+    message("No slurry/baseline data available")
+    return(NULL)
+  }
+
+  # Get donors and colors
+  donors_present <- unique(plot_data$Donor)
+  colors_to_use <- DONOR_COLORS[donors_present]
+  colors_to_use <- colors_to_use[!is.na(colors_to_use)]
+
+  # Order donors by group
+  plot_data <- plot_data %>%
+    mutate(Donor = factor(Donor, levels = c("LC01", "LC02", "LC03", "LC04",
+                                             "Rec01", "Rec02", "Rec03", "POOL")))
+
+  p <- ggplot(plot_data, aes(x = Donor, y = Mean_Copy_Number, fill = Donor)) +
+    geom_col(width = 0.7, color = "black", linewidth = 0.3) +
+    geom_errorbar(aes(ymin = pmax(Mean_Copy_Number - SD_Copy_Number, 1),
+                      ymax = Mean_Copy_Number + SD_Copy_Number),
+                  width = 0.2, linewidth = 0.5) +
+    scale_fill_manual(values = colors_to_use) +
+    scale_y_log10(labels = scales::scientific) +
+    labs(
+      title = if(is.null(target)) "Baseline (Slurry) Comparison - All Targets"
+              else paste(target, "- Baseline (Slurry) Comparison"),
+      x = "Donor",
+      y = "Copy Number (log scale)"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      panel.grid.minor = element_blank()
+    )
+
+  # Facet by target if showing all
+  if (is.null(target) && length(unique(plot_data$Bacterial_Target)) > 1) {
+    p <- p + facet_wrap(~Bacterial_Target, scales = "free_y", ncol = 3)
+  }
+
+  return(p)
+}
+
+#' Create start vs end comparison plot (dumbbell/slope chart)
+#' Shows change from baseline (Day 0) to final timepoint
+#'
+#' @param data Summary data frame
+#' @param target Bacterial target to plot
+#' @param vessel Which vessel ("V1" or "V3")
+#' @param end_day The final day to compare (default finds max day in data)
+#' @return ggplot object
+plot_start_vs_end <- function(data, target, vessel = "V1", end_day = NULL) {
+
+  # Prepare data
+  plot_data <- prepare_plot_data(data, target, vessel, include_slurry = TRUE)
+
+  if (nrow(plot_data) == 0) {
+    message("No data available for ", target, " in vessel ", vessel)
+    return(NULL)
+  }
+
+  # Find end day if not specified
+  if (is.null(end_day)) {
+    end_day <- max(plot_data$Day_Numeric, na.rm = TRUE)
+  }
+
+  # Get start (Day 0) and end data
+  start_data <- plot_data %>%
+    filter(Day_Numeric == 0) %>%
+    select(Donor, Donor_Group, Start_Copy = Mean_Copy_Number)
+
+  end_data <- plot_data %>%
+    filter(Day_Numeric == end_day) %>%
+    select(Donor, End_Copy = Mean_Copy_Number)
+
+  # Combine
+  comparison_data <- start_data %>%
+    inner_join(end_data, by = "Donor") %>%
+    mutate(
+      Fold_Change = End_Copy / Start_Copy,
+      Log2_FC = log2(Fold_Change),
+      Direction = ifelse(End_Copy > Start_Copy, "Increased", "Decreased")
+    )
+
+  if (nrow(comparison_data) == 0) {
+    message("No paired start/end data available")
+    return(NULL)
+  }
+
+  # Get colors
+  donors_present <- unique(comparison_data$Donor)
+  colors_to_use <- DONOR_COLORS[donors_present]
+  colors_to_use <- colors_to_use[!is.na(colors_to_use)]
+
+  # Order donors
+  comparison_data <- comparison_data %>%
+    mutate(Donor = factor(Donor, levels = c("LC01", "LC02", "LC03", "LC04",
+                                             "Rec01", "Rec02", "Rec03", "POOL")))
+
+  # Create dumbbell plot
+  p <- ggplot(comparison_data, aes(y = Donor)) +
+    # Line connecting start to end
+    geom_segment(aes(x = Start_Copy, xend = End_Copy, yend = Donor, color = Donor),
+                 linewidth = 1.5, alpha = 0.7) +
+    # Start point (circle)
+    geom_point(aes(x = Start_Copy, color = Donor), size = 4, shape = 16) +
+    # End point (triangle)
+    geom_point(aes(x = End_Copy, color = Donor), size = 4, shape = 17) +
+    scale_color_manual(values = colors_to_use) +
+    scale_x_log10(labels = scales::scientific) +
+    labs(
+      title = paste(target, "-", vessel, ": Day 0 vs Day", end_day),
+      subtitle = "Circle = Start (Day 0), Triangle = End",
+      x = "Copy Number (log scale)",
+      y = "Donor"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10, color = "gray40"),
+      legend.position = "none",
+      panel.grid.minor = element_blank()
+    )
+
+  return(p)
+}
+
+#' Create fold change bar chart (start to end)
+#'
+#' @param data Summary data frame
+#' @param target Bacterial target to plot
+#' @param vessel Which vessel ("V1" or "V3")
+#' @param end_day The final day to compare
+#' @return ggplot object
+plot_fold_change <- function(data, target, vessel = "V1", end_day = NULL) {
+
+  # Prepare data
+  plot_data <- prepare_plot_data(data, target, vessel, include_slurry = TRUE)
+
+  if (nrow(plot_data) == 0) {
+    message("No data available for ", target, " in vessel ", vessel)
+    return(NULL)
+  }
+
+  # Find end day if not specified
+  if (is.null(end_day)) {
+    end_day <- max(plot_data$Day_Numeric, na.rm = TRUE)
+  }
+
+  # Get start and end data
+  start_data <- plot_data %>%
+    filter(Day_Numeric == 0) %>%
+    select(Donor, Donor_Group, Start_Copy = Mean_Copy_Number)
+
+  end_data <- plot_data %>%
+    filter(Day_Numeric == end_day) %>%
+    select(Donor, End_Copy = Mean_Copy_Number)
+
+  # Calculate fold change
+  fc_data <- start_data %>%
+    inner_join(end_data, by = "Donor") %>%
+    mutate(
+      Log2_FC = log2(End_Copy / Start_Copy),
+      Direction = ifelse(Log2_FC > 0, "Increased", "Decreased"),
+      Donor = factor(Donor, levels = c("LC01", "LC02", "LC03", "LC04",
+                                        "Rec01", "Rec02", "Rec03", "POOL"))
+    )
+
+  if (nrow(fc_data) == 0) {
+    message("No paired start/end data available")
+    return(NULL)
+  }
+
+  # Get colors
+  donors_present <- unique(fc_data$Donor)
+  colors_to_use <- DONOR_COLORS[as.character(donors_present)]
+  colors_to_use <- colors_to_use[!is.na(colors_to_use)]
+
+  p <- ggplot(fc_data, aes(x = Donor, y = Log2_FC, fill = Donor)) +
+    geom_col(width = 0.7, color = "black", linewidth = 0.3) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    scale_fill_manual(values = colors_to_use) +
+    labs(
+      title = paste(target, "-", vessel, ": Fold Change (Day 0 to Day", end_day, ")"),
+      x = "Donor",
+      y = expression(Log[2]~Fold~Change),
+      caption = "Above 0 = increased, Below 0 = decreased"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      panel.grid.minor = element_blank()
+    )
+
+  return(p)
+}
+
+#' Create comparison plot showing both vessels side by side for start vs end
+#'
+#' @param data Summary data frame
+#' @param target Bacterial target to plot
+#' @param end_day The final day to compare
+#' @return ggplot object
+plot_start_vs_end_both_vessels <- function(data, target, end_day = NULL) {
+
+  # Get data for both vessels
+  plot_data <- data %>%
+    filter(Bacterial_Target == target) %>%
+    filter(!is.na(Mean_Copy_Number) & !is.na(Day_Numeric) & !is.na(Donor))
+
+  # Handle slurry - duplicate for both vessels
+  if ("Slurry" %in% plot_data$Vessel) {
+    slurry_data <- plot_data %>% filter(Vessel == "Slurry")
+    slurry_v1 <- slurry_data %>% mutate(Vessel = "V1")
+    slurry_v3 <- slurry_data %>% mutate(Vessel = "V3")
+
+    plot_data <- plot_data %>%
+      filter(Vessel != "Slurry") %>%
+      bind_rows(slurry_v1, slurry_v3)
+  }
+
+  if (nrow(plot_data) == 0) {
+    message("No data available for ", target)
+    return(NULL)
+  }
+
+  # Find end day
+  if (is.null(end_day)) {
+    end_day <- max(plot_data$Day_Numeric, na.rm = TRUE)
+  }
+
+  # Calculate fold change for each vessel
+  fc_data <- plot_data %>%
+    filter(Day_Numeric %in% c(0, end_day)) %>%
+    select(Donor, Donor_Group, Vessel, Day_Numeric, Mean_Copy_Number) %>%
+    pivot_wider(names_from = Day_Numeric, values_from = Mean_Copy_Number,
+                names_prefix = "Day_") %>%
+    mutate(
+      Log2_FC = log2(get(paste0("Day_", end_day)) / Day_0),
+      Donor = factor(Donor, levels = c("LC01", "LC02", "LC03", "LC04",
+                                        "Rec01", "Rec02", "Rec03", "POOL"))
+    ) %>%
+    filter(!is.na(Log2_FC) & !is.infinite(Log2_FC))
+
+  if (nrow(fc_data) == 0) {
+    message("No paired start/end data available")
+    return(NULL)
+  }
+
+  # Get colors
+  donors_present <- unique(fc_data$Donor)
+  colors_to_use <- DONOR_COLORS[as.character(donors_present)]
+  colors_to_use <- colors_to_use[!is.na(colors_to_use)]
+
+  p <- ggplot(fc_data, aes(x = Donor, y = Log2_FC, fill = Donor)) +
+    geom_col(width = 0.7, color = "black", linewidth = 0.3) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    scale_fill_manual(values = colors_to_use) +
+    facet_wrap(~Vessel, ncol = 2) +
+    labs(
+      title = paste(target, ": Fold Change (Day 0 to Day", end_day, ")"),
+      x = "Donor",
+      y = expression(Log[2]~Fold~Change),
+      caption = "Above 0 = increased, Below 0 = decreased"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(face = "bold")
+    )
+
+  return(p)
+}
+
 # Keep old function names as aliases for compatibility
 plot_timeseries <- plot_individual_donors
 plot_timeseries_by_group <- plot_group_means
@@ -834,9 +1130,43 @@ save_plots <- function(combined_results, output_dir = "analysis_results") {
              p, width = 12, height = 6)
       plots_saved <- plots_saved + 1
     }
+
+    # Slurry baseline comparison
+    p <- plot_slurry_comparison(combined_results$summary, target)
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_slurry_baseline_", timestamp, ".pdf")),
+             p, width = 10, height = 6)
+      plots_saved <- plots_saved + 1
+    }
+
+    # Start vs end fold change - both vessels
+    p <- plot_start_vs_end_both_vessels(combined_results$summary, target)
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_fold_change_", timestamp, ".pdf")),
+             p, width = 12, height = 6)
+      plots_saved <- plots_saved + 1
+    }
+
+    # Start vs end dumbbell - V1
+    p <- plot_start_vs_end(combined_results$summary, target, vessel = "V1")
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_V1_start_vs_end_", timestamp, ".pdf")),
+             p, width = 10, height = 6)
+      plots_saved <- plots_saved + 1
+    }
+
+    # Start vs end dumbbell - V3
+    p <- plot_start_vs_end(combined_results$summary, target, vessel = "V3")
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_V3_start_vs_end_", timestamp, ".pdf")),
+             p, width = 10, height = 6)
+      plots_saved <- plots_saved + 1
+    }
   }
 
   # Save multi-panel overview
+  cat("  Creating overview plots...\n")
+
   p <- plot_all_targets(combined_results$summary, "V1")
   if (!is.null(p)) {
     ggsave(file.path(output_dir, paste0("ALL_targets_V1_", timestamp, ".pdf")),
@@ -847,6 +1177,14 @@ save_plots <- function(combined_results, output_dir = "analysis_results") {
   p <- plot_all_targets(combined_results$summary, "V3")
   if (!is.null(p)) {
     ggsave(file.path(output_dir, paste0("ALL_targets_V3_", timestamp, ".pdf")),
+           p, width = 14, height = 10)
+    plots_saved <- plots_saved + 1
+  }
+
+  # Save slurry comparison for all targets
+  p <- plot_slurry_comparison(combined_results$summary, target = NULL)
+  if (!is.null(p)) {
+    ggsave(file.path(output_dir, paste0("ALL_slurry_baseline_", timestamp, ".pdf")),
            p, width = 14, height = 10)
     plots_saved <- plots_saved + 1
   }
