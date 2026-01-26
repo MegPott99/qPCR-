@@ -464,27 +464,28 @@ combine_results <- function(results_list) {
 # PLOTTING FUNCTIONS
 # =============================================================================
 
-# Custom color palette: Vibrant, distinct colors for each donor
-# Warm tones for Long COVID, Cool tones for Recovered, Distinct for Pool
+# Custom color palette: Based on user's palette
+# Pinks/rose for Long COVID, Powdery blues for Recovered
+# Using more saturated/distinct shades from the same color families
 DONOR_COLORS <- c(
-  # Long COVID donors - distinct warm colors
-  "LC01" = "#E63946",
-  "LC02" = "#F4A261",
-  "LC03" = "#9D4EDD",
-  "LC04" = "#E76F51",
-  # Recovered donors - distinct cool colors
-  "Rec01" = "#2A9D8F",
-  "Rec02" = "#264653",
-  "Rec03" = "#3A86FF",
-  # Pool - distinct green/gold
-  "POOL" = "#6A994E"
+  # Long COVID donors - pink/rose spectrum (more distinct shades)
+  "LC01" = "#D64550",
+  "LC02" = "#E8919A",
+  "LC03" = "#A23B48",
+  "LC04" = "#C47C83",
+  # Recovered donors - powdery blue spectrum (more distinct shades)
+  "Rec01" = "#5B8FA8",
+  "Rec02" = "#A8D0E6",
+  "Rec03" = "#2E5A6B",
+  # Pool - teal (distinct from both groups)
+  "POOL" = "#4A8F8F"
 )
 
 # Group colors (for group-level summaries)
 GROUP_COLORS <- c(
-  "Long COVID" = "#E63946",
-  "Recovered" = "#2A9D8F",
-  "Pool" = "#6A994E"
+  "Long COVID" = "#D64550",
+  "Recovered" = "#5B8FA8",
+  "Pool" = "#4A8F8F"
 )
 
 #' Prepare plot data - handles slurry and filters vessels
