@@ -553,28 +553,27 @@ combine_results <- function(results_list) {
 # PLOTTING FUNCTIONS
 # =============================================================================
 
-# Custom color palette: Based on user's palette
-# Pinks/rose for Long COVID, Powdery blues for Recovered
-# Using more saturated/distinct shades from the same color families
+# Custom color palette: Selected from user's palette
+# Using distinct colors across the full palette, avoiding beige/grey
 DONOR_COLORS <- c(
-  # Long COVID donors - pink/rose spectrum (more distinct shades)
-  "LC01" = "#D64550",
-  "LC02" = "#E8919A",
-  "LC03" = "#A23B48",
-  "LC04" = "#C47C83",
-  # Recovered donors - powdery blue spectrum (more distinct shades)
-  "Rec01" = "#5B8FA8",
-  "Rec02" = "#A8D0E6",
-  "Rec03" = "#2E5A6B",
-  # Pool - teal (distinct from both groups)
-  "POOL" = "#4A8F8F"
+  # Long COVID donors - varied colors from palette
+  "LC01" = "#1D3557",
+  "LC02" = "#C9787A",
+  "LC03" = "#7B68A6",
+  "LC04" = "#E07A5F",
+  # Recovered donors - varied colors from palette
+  "Rec01" = "#4A90A4",
+  "Rec02" = "#81B29A",
+  "Rec03" = "#264653",
+  # Pool - distinct teal
+  "POOL" = "#2A9D8F"
 )
 
 # Group colors (for group-level summaries)
 GROUP_COLORS <- c(
-  "Long COVID" = "#D64550",
-  "Recovered" = "#5B8FA8",
-  "Pool" = "#4A8F8F"
+  "Long COVID" = "#C9787A",
+  "Recovered" = "#4A90A4",
+  "Pool" = "#2A9D8F"
 )
 
 #' Prepare plot data - handles slurry and filters vessels
@@ -867,10 +866,10 @@ plot_slurry_comparison <- function(data, target = NULL) {
                                              "Rec01", "Rec02", "Rec03", "POOL")))
 
   p <- ggplot(plot_data, aes(x = Donor, y = Mean_Copy_Number, fill = Donor)) +
-    geom_col(width = 0.7, color = "black", linewidth = 0.3) +
+    geom_col(width = 0.7, color = "black", linewidth = 1.0) +
     geom_errorbar(aes(ymin = pmax(Mean_Copy_Number - SD_Copy_Number, 1),
                       ymax = Mean_Copy_Number + SD_Copy_Number),
-                  width = 0.2, linewidth = 0.5) +
+                  width = 0.2, linewidth = 0.7) +
     scale_fill_manual(values = colors_to_use) +
     scale_y_log10(labels = scales::scientific) +
     labs(
@@ -1031,8 +1030,8 @@ plot_fold_change <- function(data, target, vessel = "V1", end_day = NULL) {
   colors_to_use <- colors_to_use[!is.na(colors_to_use)]
 
   p <- ggplot(fc_data, aes(x = Donor, y = Log2_FC, fill = Donor)) +
-    geom_col(width = 0.7, color = "black", linewidth = 0.3) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_col(width = 0.7, color = "black", linewidth = 1.0) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", linewidth = 0.8) +
     scale_fill_manual(values = colors_to_use) +
     labs(
       title = paste(target, "-", vessel, ": Fold Change (Day 0 to Day", end_day, ")"),
@@ -1109,8 +1108,8 @@ plot_start_vs_end_both_vessels <- function(data, target, end_day = NULL) {
   colors_to_use <- colors_to_use[!is.na(colors_to_use)]
 
   p <- ggplot(fc_data, aes(x = Donor, y = Log2_FC, fill = Donor)) +
-    geom_col(width = 0.7, color = "black", linewidth = 0.3) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_col(width = 0.7, color = "black", linewidth = 1.0) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", linewidth = 0.8) +
     scale_fill_manual(values = colors_to_use) +
     facet_wrap(~Vessel, ncol = 2) +
     labs(
