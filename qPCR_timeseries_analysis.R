@@ -58,17 +58,22 @@ parse_sample_ids <- function(sample_ids) {
 
     if (is.na(sample) || sample == "") next
 
+    # Split by underscore and remove empty parts (handles double underscores)
     parts <- str_split(sample, "_")[[1]]
+    parts <- parts[parts != ""]  # Remove empty strings from double underscores
 
-    # Check for Slurry samples (Donor_Slurry format)
-    if (length(parts) == 2 && tolower(parts[2]) == "slurry") {
+    # Check for Slurry samples - look for "slurry" anywhere in the parts
+    is_slurry <- any(tolower(parts) == "slurry")
+
+    if (is_slurry) {
+      # Slurry sample: first part is donor
       parsed$Donor[i] <- parts[1]
       parsed$Vessel[i] <- "Slurry"
       parsed$Day[i] <- "Slurry"
       parsed$Day_Numeric[i] <- 0
 
     # Check for standard format (Donor_Vessel_Day)
-    } else if (length(parts) == 3) {
+    } else if (length(parts) >= 3) {
       parsed$Donor[i] <- parts[1]
       parsed$Vessel[i] <- parts[2]
       parsed$Day[i] <- parts[3]
@@ -76,6 +81,18 @@ parse_sample_ids <- function(sample_ids) {
       # Extract numeric day value
       day_num <- as.numeric(str_extract(parts[3], "\\d+"))
       parsed$Day_Numeric[i] <- ifelse(is.na(day_num), NA, day_num)
+
+    # Handle 2-part format (might be Donor_Day without vessel?)
+    } else if (length(parts) == 2) {
+      parsed$Donor[i] <- parts[1]
+      # Check if second part looks like a day
+      if (grepl("^D\\d+$", parts[2], ignore.case = TRUE)) {
+        parsed$Day[i] <- parts[2]
+        day_num <- as.numeric(str_extract(parts[2], "\\d+"))
+        parsed$Day_Numeric[i] <- ifelse(is.na(day_num), NA, day_num)
+      } else {
+        parsed$Vessel[i] <- parts[2]
+      }
     }
 
     # Assign donor group
