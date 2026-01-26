@@ -431,6 +431,92 @@ if (is.null(file_paths)) {
   return(all_results)
 }
 
+#' Report missing data in the dataset
+#'
+#' @param summary_data Summary data frame
+#' @return Invisibly returns missing data summary
+report_missing_data <- function(summary_data) {
+
+  cat("\n", paste(rep("-", 60), collapse = ""), "\n")
+  cat("MISSING DATA CHECK\n")
+  cat(paste(rep("-", 60), collapse = ""), "\n")
+
+  # Expected donors, vessels, days
+expected_donors <- c("LC01", "LC02", "LC03", "LC04", "Rec01", "Rec02", "Rec03", "POOL")
+  expected_vessels <- c("Slurry", "V1", "V3")
+  expected_days <- c(0, 1, 2, 3, 6, 8, 10, 13, 17, 20)
+
+  # Get unique values in data
+  targets <- unique(summary_data$Bacterial_Target)
+
+  missing_summary <- list()
+
+  for (target in targets) {
+    target_data <- summary_data %>% filter(Bacterial_Target == target)
+
+    # Check which donors are present
+    donors_present <- unique(target_data$Donor)
+    donors_missing <- setdiff(expected_donors, donors_present)
+
+    # Check coverage for each vessel
+    for (vessel in c("V1", "V3")) {
+      vessel_data <- target_data %>% filter(Vessel == vessel | Vessel == "Slurry")
+
+      if (nrow(vessel_data) == 0) next
+
+      # For each donor, which days are missing?
+      for (donor in donors_present) {
+        donor_data <- vessel_data %>% filter(Donor == donor)
+        days_present <- unique(donor_data$Day_Numeric)
+        days_missing <- setdiff(expected_days, days_present)
+
+        if (length(days_missing) > 0) {
+          key <- paste(target, vessel, donor, sep = "_")
+          missing_summary[[key]] <- list(
+            target = target,
+            vessel = vessel,
+            donor = donor,
+            missing_days = days_missing
+          )
+        }
+      }
+    }
+
+    # Report donors completely missing for this target
+    if (length(donors_missing) > 0) {
+      cat("  ", target, ": Missing donors -", paste(donors_missing, collapse = ", "), "\n")
+    }
+  }
+
+  # Summarize missing timepoints
+  if (length(missing_summary) > 0) {
+    cat("\n  Missing timepoints detected:\n")
+
+    # Group by target
+    for (target in targets) {
+      target_missing <- missing_summary[grepl(paste0("^", target, "_"), names(missing_summary))]
+
+      if (length(target_missing) > 0) {
+        cat("  ", target, ":\n")
+
+        for (item in target_missing) {
+          cat("    ", item$donor, "(", item$vessel, "): Days",
+              paste(item$missing_days, collapse = ", "), "\n")
+        }
+      }
+    }
+
+    cat("\n  NOTE: Missing data points are excluded from group averages.\n")
+    cat("  Group means at each timepoint only include donors with data.\n")
+  } else {
+    cat("  No missing timepoints detected for donors present in data.\n")
+  }
+
+  cat(paste(rep("-", 60), collapse = ""), "\n\n")
+
+  invisible(missing_summary)
+}
+
 #' Combine results from multiple files into master data frames
 #'
 #' @param results_list List of results from process_batch()
@@ -442,6 +528,9 @@ combine_results <- function(results_list) {
 
   # Combine all summaries
   all_summary <- bind_rows(lapply(results_list, function(x) x$summary))
+
+  # Report missing data
+  report_missing_data(all_summary)
 
   # Create curve info summary
   curve_info <- data.frame(
@@ -600,13 +689,15 @@ plot_individual_donors <- function(data, target, vessel = "both",
 
 #' Create time series plot showing GROUP MEANS with confidence ribbons
 #' Shows average across donors within each group (LC, Recovered, Pool)
+#' Error bars show BIOLOGICAL variation (SD across donors in group)
 #'
 #' @param data Summary data frame
 #' @param target Bacterial target to plot
 #' @param vessel Which vessel to plot ("V1", "V3", or "both")
 #' @param show_ribbon Show SD ribbon around mean (default TRUE)
+#' @param show_n Show sample size (N) labels on plot (default TRUE)
 #' @return ggplot object
-plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE) {
+plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE, show_n = TRUE) {
 
   plot_data <- prepare_plot_data(data, target, vessel, include_slurry = TRUE)
 
@@ -615,7 +706,7 @@ plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE) 
     return(NULL)
   }
 
-  # Calculate group means and SD
+  # Calculate group means and SD (BIOLOGICAL variation - across donors)
   group_summary <- plot_data %>%
     group_by(Donor_Group, Vessel, Day_Numeric) %>%
     summarise(
@@ -634,6 +725,13 @@ plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE) 
       Group_SE = ifelse(is.na(Group_SE), 0, Group_SE)
     )
 
+  # Check for varying N (indicates missing data)
+  n_varies <- group_summary %>%
+    group_by(Donor_Group, Vessel) %>%
+    summarise(n_unique = n_distinct(N), .groups = 'drop') %>%
+    pull(n_unique) %>%
+    any(. > 1)
+
   p <- ggplot(group_summary, aes(x = Day_Numeric, y = Group_Mean,
                                   color = Donor_Group, fill = Donor_Group,
                                   group = Donor_Group))
@@ -647,13 +745,23 @@ plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE) 
 
   p <- p +
     geom_line(linewidth = 1.5) +
-    geom_point(size = 4) +
+    geom_point(size = 4)
+
+  # Add N labels if requested and N varies (indicates missing data)
+  if (show_n && n_varies) {
+    p <- p +
+      geom_text(aes(label = paste0("n=", N)),
+                vjust = -1.5, size = 2.5, show.legend = FALSE)
+  }
+
+  p <- p +
     scale_color_manual(values = GROUP_COLORS) +
     scale_fill_manual(values = GROUP_COLORS) +
     scale_y_log10(labels = scales::scientific) +
     scale_x_continuous(breaks = c(0, 1, 2, 3, 6, 8, 10, 13, 17, 20)) +
     labs(
       title = paste(target, "- Group Averages"),
+      subtitle = if(n_varies) "Ribbon = SD across donors; n varies due to missing data" else "Ribbon = SD across donors",
       x = "Day",
       y = "Copy Number (log scale)",
       color = "Group",
@@ -662,6 +770,7 @@ plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE) 
     theme_bw() +
     theme(
       plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 9, color = "gray40"),
       legend.position = "right",
       panel.grid.minor = element_blank()
     )
