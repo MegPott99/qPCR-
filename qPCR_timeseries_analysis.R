@@ -447,36 +447,61 @@ combine_results <- function(results_list) {
 # PLOTTING FUNCTIONS
 # =============================================================================
 
-#' Create time series line plot for a single bacterial target
-#'
-#' @param data Summary data frame (from combine_results()$summary)
-#' @param target Bacterial target to plot
-#' @param vessel Which vessel to plot ("V1", "V3", or "both")
-#' @param log_scale Use log10 scale for y-axis (default TRUE)
-#' @param include_slurry Include slurry samples as Day 0 (default TRUE)
-#' @return ggplot object
-plot_timeseries <- function(data, target, vessel = "both",
-                            log_scale = TRUE, include_slurry = TRUE) {
+# Custom color palette: Pinks for Long COVID, Blues for Recovered, Teal for Pool
+DONOR_COLORS <- c(
+  # Long COVID donors - pink/rose hues
+  "LC01" = "#D4A5A5",
+  "LC02" = "#E8B4B8",
+  "LC03" = "#C9787A",
+  "LC04" = "#B56576",
+  # Recovered donors - powdery blue hues
+  "Rec01" = "#A5C4D4",
+  "Rec02" = "#89B0C4",
+  "Rec03" = "#6B9BB5",
+  # Pool - teal/green
+  "POOL" = "#7BA3A8"
+)
 
-  # Filter for target
-  plot_data <- data %>%
-    filter(Bacterial_Target == target)
+# Group colors (for group-level summaries)
+GROUP_COLORS <- c(
+  "Long COVID" = "#C9787A",
+  "Recovered" = "#89B0C4",
+  "Pool" = "#7BA3A8"
+)
 
-  if (!include_slurry) {
-    plot_data <- plot_data %>% filter(Vessel != "Slurry")
+#' Prepare plot data - handles slurry and filters vessels
+#' @param data Summary data frame
+#' @param target Bacterial target (or NULL for all)
+#' @param vessel Which vessel ("V1", "V3", or "both")
+#' @param include_slurry Include slurry as Day 0
+#' @return Filtered data frame
+prepare_plot_data <- function(data, target = NULL, vessel = "both", include_slurry = TRUE) {
+
+  plot_data <- data
+
+  # Filter for target if specified
+
+if (!is.null(target)) {
+    plot_data <- plot_data %>% filter(Bacterial_Target == target)
   }
 
-  # Handle slurry samples - they apply to both vessels
+  # Remove rows with missing data
+  plot_data <- plot_data %>%
+    filter(!is.na(Mean_Copy_Number) & !is.na(Day_Numeric) & !is.na(Donor))
+
+  if (nrow(plot_data) == 0) return(plot_data)
+
+  # Handle slurry samples - duplicate for both vessels
   if (include_slurry && "Slurry" %in% plot_data$Vessel) {
     slurry_data <- plot_data %>% filter(Vessel == "Slurry")
-
-    # Duplicate slurry for both V1 and V3
     slurry_v1 <- slurry_data %>% mutate(Vessel = "V1")
     slurry_v3 <- slurry_data %>% mutate(Vessel = "V3")
 
     plot_data <- plot_data %>%
       filter(Vessel != "Slurry") %>%
       bind_rows(slurry_v1, slurry_v3)
+  } else if (!include_slurry) {
+    plot_data <- plot_data %>% filter(Vessel != "Slurry")
   }
 
   # Filter for vessel
@@ -484,119 +509,150 @@ plot_timeseries <- function(data, target, vessel = "both",
     plot_data <- plot_data %>% filter(Vessel == vessel)
   }
 
-  # Create plot
+  # Only keep vessels that have data
+  plot_data <- plot_data %>%
+    group_by(Vessel) %>%
+    filter(n() > 0) %>%
+    ungroup()
+
+  return(plot_data)
+}
+
+#' Create time series plot showing INDIVIDUAL DONORS
+#' Each donor gets their own color (pink shades for LC, blue shades for Rec)
+#'
+#' @param data Summary data frame (from combine_results()$summary)
+#' @param target Bacterial target to plot
+#' @param vessel Which vessel to plot ("V1", "V3", or "both")
+#' @param log_scale Use log10 scale for y-axis (default TRUE)
+#' @param include_slurry Include slurry samples as Day 0 (default TRUE)
+#' @return ggplot object
+plot_individual_donors <- function(data, target, vessel = "both",
+                                    log_scale = TRUE, include_slurry = TRUE) {
+
+  plot_data <- prepare_plot_data(data, target, vessel, include_slurry)
+
+  if (nrow(plot_data) == 0) {
+    message("No data available for ", target, " in vessel ", vessel)
+    return(NULL)
+  }
+
+  # Get donors present in data and their colors
+  donors_present <- unique(plot_data$Donor)
+  colors_to_use <- DONOR_COLORS[donors_present]
+  colors_to_use <- colors_to_use[!is.na(colors_to_use)]
+
   p <- ggplot(plot_data, aes(x = Day_Numeric, y = Mean_Copy_Number,
                               color = Donor, group = Donor)) +
-    geom_line(linewidth = 0.8) +
-    geom_point(size = 2) +
-    geom_errorbar(aes(ymin = Mean_Copy_Number - SD_Copy_Number,
-                      ymax = Mean_Copy_Number + SD_Copy_Number),
-                  width = 0.3, alpha = 0.5) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 3) +
+    scale_color_manual(values = colors_to_use) +
+    scale_x_continuous(breaks = c(0, 1, 2, 3, 6, 8, 10, 13, 17, 20)) +
     labs(
-      title = paste(target, "- Population Over Time"),
+      title = paste(target, "- Individual Donors"),
       x = "Day",
       y = "Copy Number",
       color = "Donor"
     ) +
-    scale_x_continuous(breaks = c(0, 1, 2, 3, 6, 8, 10, 13, 17, 20)) +
     theme_bw() +
     theme(
       plot.title = element_text(face = "bold", size = 14),
-      legend.position = "right"
+      legend.position = "right",
+      panel.grid.minor = element_blank()
     )
 
-  # Add log scale if requested
   if (log_scale) {
     p <- p +
       scale_y_log10(labels = scales::scientific) +
       labs(y = "Copy Number (log scale)")
   }
 
-  # Facet by vessel if showing both
-  if (vessel == "both") {
-    p <- p + facet_wrap(~Vessel, ncol = 2)
+  # Facet by vessel if showing both - only show panels with data
+  if (vessel == "both" && length(unique(plot_data$Vessel)) > 1) {
+    p <- p + facet_wrap(~Vessel, ncol = 2, scales = "free_y")
+  } else if (vessel == "both") {
+    # Add vessel to title if only one vessel has data
+    v <- unique(plot_data$Vessel)[1]
+    p <- p + labs(title = paste(target, "-", v, "- Individual Donors"))
   }
 
   return(p)
 }
 
-#' Create time series plot colored by donor group
+#' Create time series plot showing GROUP MEANS with confidence ribbons
+#' Shows average across donors within each group (LC, Recovered, Pool)
 #'
 #' @param data Summary data frame
 #' @param target Bacterial target to plot
 #' @param vessel Which vessel to plot ("V1", "V3", or "both")
-#' @param show_individual_donors Show individual donor lines (default TRUE)
+#' @param show_ribbon Show SD ribbon around mean (default TRUE)
 #' @return ggplot object
-plot_timeseries_by_group <- function(data, target, vessel = "both",
-                                      show_individual_donors = TRUE) {
+plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE) {
 
-  plot_data <- data %>%
-    filter(Bacterial_Target == target)
+  plot_data <- prepare_plot_data(data, target, vessel, include_slurry = TRUE)
 
-  # Handle slurry samples
-  if ("Slurry" %in% plot_data$Vessel) {
-    slurry_data <- plot_data %>% filter(Vessel == "Slurry")
-    slurry_v1 <- slurry_data %>% mutate(Vessel = "V1")
-    slurry_v3 <- slurry_data %>% mutate(Vessel = "V3")
-
-    plot_data <- plot_data %>%
-      filter(Vessel != "Slurry") %>%
-      bind_rows(slurry_v1, slurry_v3)
+  if (nrow(plot_data) == 0) {
+    message("No data available for ", target, " in vessel ", vessel)
+    return(NULL)
   }
 
-  if (vessel != "both") {
-    plot_data <- plot_data %>% filter(Vessel == vessel)
-  }
-
-  # Define colors for donor groups
-  group_colors <- c(
-    "Long COVID" = "#E41A1C",
-    "Recovered" = "#377EB8",
-    "Pool" = "#4DAF4A"
-  )
-
-  p <- ggplot(plot_data, aes(x = Day_Numeric, y = Mean_Copy_Number))
-
-  if (show_individual_donors) {
-    p <- p +
-      geom_line(aes(color = Donor_Group, group = Donor),
-                linewidth = 0.6, alpha = 0.7) +
-      geom_point(aes(color = Donor_Group), size = 2, alpha = 0.7)
-  }
-
-  # Add group means
-  group_means <- plot_data %>%
+  # Calculate group means and SD
+  group_summary <- plot_data %>%
     group_by(Donor_Group, Vessel, Day_Numeric) %>%
     summarise(
       Group_Mean = mean(Mean_Copy_Number, na.rm = TRUE),
       Group_SD = sd(Mean_Copy_Number, na.rm = TRUE),
+      Group_SE = sd(Mean_Copy_Number, na.rm = TRUE) / sqrt(n()),
+      N = n(),
       .groups = 'drop'
+    ) %>%
+    filter(!is.na(Group_Mean))
+
+  # Replace NA SD with 0 (for single observations)
+  group_summary <- group_summary %>%
+    mutate(
+      Group_SD = ifelse(is.na(Group_SD), 0, Group_SD),
+      Group_SE = ifelse(is.na(Group_SE), 0, Group_SE)
     )
 
+  p <- ggplot(group_summary, aes(x = Day_Numeric, y = Group_Mean,
+                                  color = Donor_Group, fill = Donor_Group,
+                                  group = Donor_Group))
+
+  if (show_ribbon && any(group_summary$Group_SD > 0)) {
+    p <- p +
+      geom_ribbon(aes(ymin = pmax(Group_Mean - Group_SD, 1),
+                      ymax = Group_Mean + Group_SD),
+                  alpha = 0.2, color = NA)
+  }
+
   p <- p +
-    geom_line(data = group_means,
-              aes(y = Group_Mean, color = Donor_Group, group = Donor_Group),
-              linewidth = 1.5) +
-    geom_point(data = group_means,
-               aes(y = Group_Mean, color = Donor_Group),
-               size = 3) +
-    scale_color_manual(values = group_colors) +
+    geom_line(linewidth = 1.5) +
+    geom_point(size = 4) +
+    scale_color_manual(values = GROUP_COLORS) +
+    scale_fill_manual(values = GROUP_COLORS) +
     scale_y_log10(labels = scales::scientific) +
     scale_x_continuous(breaks = c(0, 1, 2, 3, 6, 8, 10, 13, 17, 20)) +
     labs(
-      title = paste(target, "- By Donor Group"),
+      title = paste(target, "- Group Averages"),
       x = "Day",
       y = "Copy Number (log scale)",
-      color = "Group"
+      color = "Group",
+      fill = "Group"
     ) +
     theme_bw() +
     theme(
       plot.title = element_text(face = "bold", size = 14),
-      legend.position = "right"
+      legend.position = "right",
+      panel.grid.minor = element_blank()
     )
 
-  if (vessel == "both") {
-    p <- p + facet_wrap(~Vessel, ncol = 2)
+  # Facet by vessel if showing both - only show panels with data
+  if (vessel == "both" && length(unique(group_summary$Vessel)) > 1) {
+    p <- p + facet_wrap(~Vessel, ncol = 2, scales = "free_y")
+  } else if (vessel == "both") {
+    v <- unique(group_summary$Vessel)[1]
+    p <- p + labs(title = paste(target, "-", v, "- Group Averages"))
   }
 
   return(p)
@@ -609,31 +665,28 @@ plot_timeseries_by_group <- function(data, target, vessel = "both",
 #' @return ggplot object
 plot_all_targets <- function(data, vessel = "V1") {
 
-  plot_data <- data
+  plot_data <- prepare_plot_data(data, target = NULL, vessel = vessel, include_slurry = TRUE)
 
-  # Handle slurry
-  if ("Slurry" %in% plot_data$Vessel) {
-    slurry_data <- plot_data %>% filter(Vessel == "Slurry")
-    slurry_vessel <- slurry_data %>% mutate(Vessel = vessel)
-
-    plot_data <- plot_data %>%
-      filter(Vessel != "Slurry") %>%
-      bind_rows(slurry_vessel)
+  if (nrow(plot_data) == 0) {
+    message("No data available for vessel ", vessel)
+    return(NULL)
   }
 
-  plot_data <- plot_data %>% filter(Vessel == vessel)
+  # Filter to only the specified vessel
+  if (vessel != "both") {
+    plot_data <- plot_data %>% filter(Vessel == vessel)
+  }
 
-  group_colors <- c(
-    "Long COVID" = "#E41A1C",
-    "Recovered" = "#377EB8",
-    "Pool" = "#4DAF4A"
-  )
+  # Get donors present and their colors
+  donors_present <- unique(plot_data$Donor)
+  colors_to_use <- DONOR_COLORS[donors_present]
+  colors_to_use <- colors_to_use[!is.na(colors_to_use)]
 
   p <- ggplot(plot_data, aes(x = Day_Numeric, y = Mean_Copy_Number,
-                              color = Donor_Group, group = Donor)) +
-    geom_line(linewidth = 0.5, alpha = 0.6) +
-    geom_point(size = 1.5, alpha = 0.6) +
-    scale_color_manual(values = group_colors) +
+                              color = Donor, group = Donor)) +
+    geom_line(linewidth = 1.0) +
+    geom_point(size = 2) +
+    scale_color_manual(values = colors_to_use) +
     scale_y_log10(labels = scales::scientific) +
     scale_x_continuous(breaks = c(0, 3, 6, 10, 13, 17, 20)) +
     facet_wrap(~Bacterial_Target, scales = "free_y", ncol = 3) +
@@ -641,17 +694,23 @@ plot_all_targets <- function(data, vessel = "V1") {
       title = paste("All Bacterial Targets -", vessel),
       x = "Day",
       y = "Copy Number (log scale)",
-      color = "Group"
+      color = "Donor"
     ) +
     theme_bw() +
     theme(
       plot.title = element_text(face = "bold", size = 14),
       strip.text = element_text(face = "bold"),
-      legend.position = "bottom"
-    )
+      legend.position = "bottom",
+      panel.grid.minor = element_blank()
+    ) +
+    guides(color = guide_legend(nrow = 2))
 
   return(p)
 }
+
+# Keep old function names as aliases for compatibility
+plot_timeseries <- plot_individual_donors
+plot_timeseries_by_group <- plot_group_means
 
 # =============================================================================
 # EXPORT FUNCTIONS
@@ -721,40 +780,61 @@ save_plots <- function(combined_results, output_dir = "analysis_results") {
 
   targets <- unique(combined_results$summary$Bacterial_Target)
   timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  plots_saved <- 0
 
   # Save individual target plots
   for (target in targets) {
-    # V1 plot
-    p_v1 <- plot_timeseries(combined_results$summary, target, vessel = "V1")
-    ggsave(file.path(output_dir, paste0(target, "_V1_", timestamp, ".pdf")),
-           p_v1, width = 10, height = 6)
+    cat("  Creating plots for:", target, "\n")
 
-    # V3 plot
-    p_v3 <- plot_timeseries(combined_results$summary, target, vessel = "V3")
-    ggsave(file.path(output_dir, paste0(target, "_V3_", timestamp, ".pdf")),
-           p_v3, width = 10, height = 6)
+    # Individual donors - V1
+    p <- plot_individual_donors(combined_results$summary, target, vessel = "V1")
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_V1_individuals_", timestamp, ".pdf")),
+             p, width = 10, height = 6)
+      plots_saved <- plots_saved + 1
+    }
 
-    # Combined plot
-    p_both <- plot_timeseries(combined_results$summary, target, vessel = "both")
-    ggsave(file.path(output_dir, paste0(target, "_both_vessels_", timestamp, ".pdf")),
-           p_both, width = 12, height = 6)
+    # Individual donors - V3
+    p <- plot_individual_donors(combined_results$summary, target, vessel = "V3")
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_V3_individuals_", timestamp, ".pdf")),
+             p, width = 10, height = 6)
+      plots_saved <- plots_saved + 1
+    }
 
-    # By group plot
-    p_group <- plot_timeseries_by_group(combined_results$summary, target, vessel = "both")
-    ggsave(file.path(output_dir, paste0(target, "_by_group_", timestamp, ".pdf")),
-           p_group, width = 12, height = 6)
+    # Individual donors - both vessels
+    p <- plot_individual_donors(combined_results$summary, target, vessel = "both")
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_both_individuals_", timestamp, ".pdf")),
+             p, width = 12, height = 6)
+      plots_saved <- plots_saved + 1
+    }
+
+    # Group means - both vessels
+    p <- plot_group_means(combined_results$summary, target, vessel = "both")
+    if (!is.null(p)) {
+      ggsave(file.path(output_dir, paste0(target, "_group_means_", timestamp, ".pdf")),
+             p, width = 12, height = 6)
+      plots_saved <- plots_saved + 1
+    }
   }
 
   # Save multi-panel overview
-  p_all_v1 <- plot_all_targets(combined_results$summary, "V1")
-  ggsave(file.path(output_dir, paste0("ALL_targets_V1_", timestamp, ".pdf")),
-         p_all_v1, width = 14, height = 10)
+  p <- plot_all_targets(combined_results$summary, "V1")
+  if (!is.null(p)) {
+    ggsave(file.path(output_dir, paste0("ALL_targets_V1_", timestamp, ".pdf")),
+           p, width = 14, height = 10)
+    plots_saved <- plots_saved + 1
+  }
 
-  p_all_v3 <- plot_all_targets(combined_results$summary, "V3")
-  ggsave(file.path(output_dir, paste0("ALL_targets_V3_", timestamp, ".pdf")),
-         p_all_v3, width = 14, height = 10)
+  p <- plot_all_targets(combined_results$summary, "V3")
+  if (!is.null(p)) {
+    ggsave(file.path(output_dir, paste0("ALL_targets_V3_", timestamp, ".pdf")),
+           p, width = 14, height = 10)
+    plots_saved <- plots_saved + 1
+  }
 
-  cat("Saved all plots to:", output_dir, "\n")
+  cat("Saved", plots_saved, "plots to:", output_dir, "\n")
 }
 
 # =============================================================================
