@@ -139,13 +139,18 @@ extract_bacterial_target <- function(filename) {
 # STANDARD CURVE FUNCTIONS
 # =============================================================================
 
-#' Process standard curve data and fit linear model
+#' Process standard curve data with Cook's distance outlier detection
+#'
+#' Fits both original and outlier-removed curves, lets user choose.
+#' Cook's distance threshold: 2/n
 #'
 #' @param data Raw data frame containing standards
+#' @param file_name Name of file (for display)
 #' @param start_conc Starting concentration (default 5e9)
 #' @param dilution_factor Dilution factor between standards (default 10)
-#' @return List containing model, slope, intercept, R², and efficiency
-process_standard_curve <- function(data, start_conc = STANDARD_START_CONC,
+#' @return List containing selected model, slope, intercept, R², efficiency
+process_standard_curve <- function(data, file_name = "",
+                                    start_conc = STANDARD_START_CONC,
                                     dilution_factor = DILUTION_FACTOR) {
 
   # Filter for standards
@@ -178,26 +183,90 @@ process_standard_curve <- function(data, start_conc = STANDARD_START_CONC,
       .groups = 'drop'
     )
 
-  # Fit linear model
-  model <- lm(Mean_Ct ~ Log_Concentration, data = standards_summary)
-  model_summary <- glance(model)
-  coefficients <- tidy(model)
+  # --- FIT ORIGINAL MODEL ---
+  model_original <- lm(Mean_Ct ~ Log_Concentration, data = standards_summary)
+  summary_original <- glance(model_original)
+  coeff_original <- tidy(model_original)
 
-  slope <- coefficients$estimate[coefficients$term == "Log_Concentration"]
-  intercept <- coefficients$estimate[coefficients$term == "(Intercept)"]
-  r_squared <- model_summary$r.squared
-  efficiency <- (10^(-1/slope) - 1) * 100
+  slope_original <- coeff_original$estimate[coeff_original$term == "Log_Concentration"]
+  intercept_original <- coeff_original$estimate[coeff_original$term == "(Intercept)"]
+  r2_original <- summary_original$r.squared
+  efficiency_original <- (10^(-1/slope_original) - 1) * 100
 
-  cat(sprintf("  Standard curve: R² = %.4f, Efficiency = %.1f%%\n", r_squared, efficiency))
+  # --- COOK'S DISTANCE OUTLIER DETECTION (threshold = 2/n) ---
+  n <- nrow(standards_summary)
+  cooks_d <- cooks.distance(model_original)
+  cooks_threshold <- 2 / n
+  outlier_indices <- which(cooks_d > cooks_threshold)
 
+  has_outliers <- length(outlier_indices) > 0
+
+  if (has_outliers) {
+    outlier_standards <- standards_summary$Standard_Number[outlier_indices]
+    standards_clean <- standards_summary[-outlier_indices, ]
+
+    if (nrow(standards_clean) >= 3) {
+      # Fit cleaned model
+      model_clean <- lm(Mean_Ct ~ Log_Concentration, data = standards_clean)
+      summary_clean <- glance(model_clean)
+      coeff_clean <- tidy(model_clean)
+
+      slope_clean <- coeff_clean$estimate[coeff_clean$term == "Log_Concentration"]
+      intercept_clean <- coeff_clean$estimate[coeff_clean$term == "(Intercept)"]
+      r2_clean <- summary_clean$r.squared
+      efficiency_clean <- (10^(-1/slope_clean) - 1) * 100
+    } else {
+      has_outliers <- FALSE  # Not enough points after removal
+    }
+  }
+
+  # --- DISPLAY OPTIONS AND LET USER CHOOSE ---
+  cat(sprintf("\n  === STANDARD CURVE: %s ===\n", file_name))
+  cat(sprintf("  Original curve (%d points):\n", n))
+  cat(sprintf("    R² = %.4f | Efficiency = %.1f%% | Slope = %.3f\n",
+              r2_original, efficiency_original, slope_original))
+
+  if (has_outliers) {
+    cat(sprintf("  Outlier-removed curve (%d points, removed Standard(s) %s):\n",
+                nrow(standards_clean), paste(outlier_standards, collapse = ", ")))
+    cat(sprintf("    R² = %.4f | Efficiency = %.1f%% | Slope = %.3f\n",
+                r2_clean, efficiency_clean, slope_clean))
+    cat(sprintf("    Cook's distance threshold: %.4f (2/n)\n", cooks_threshold))
+
+    cat("  Choose curve: 1 = Original, 2 = Outlier-removed: ")
+    choice <- readline(prompt = "")
+
+    if (choice == "2") {
+      cat("  -> Using outlier-removed curve\n")
+      return(list(
+        model = model_clean,
+        slope = slope_clean,
+        intercept = intercept_clean,
+        r_squared = r2_clean,
+        efficiency = efficiency_clean,
+        data = standards_clean,
+        start_concentration = start_conc,
+        curve_version = "Outlier-removed",
+        n_outliers = length(outlier_indices),
+        outlier_standards = outlier_standards
+      ))
+    }
+  } else {
+    cat("  No outliers detected (Cook's distance, threshold = 2/n)\n")
+  }
+
+  cat("  -> Using original curve\n")
   return(list(
-    model = model,
-    slope = slope,
-    intercept = intercept,
-    r_squared = r_squared,
-    efficiency = efficiency,
+    model = model_original,
+    slope = slope_original,
+    intercept = intercept_original,
+    r_squared = r2_original,
+    efficiency = efficiency_original,
     data = standards_summary,
-    start_concentration = start_conc
+    start_concentration = start_conc,
+    curve_version = "Original",
+    n_outliers = 0,
+    outlier_standards = integer(0)
   ))
 }
 
@@ -304,8 +373,8 @@ process_qpcr_file <- function(file_path) {
   cat(sprintf("  Found: %d standards, %d NTCs, %d experimental samples\n",
               length(standards), length(ntcs), length(experimental)))
 
-  # Process standard curve
-  curve <- process_standard_curve(data)
+  # Process standard curve (with Cook's distance outlier option)
+  curve <- process_standard_curve(data, file_name = basename(file_path))
 
   # Process experimental samples
   if (length(experimental) == 0) {
@@ -532,14 +601,22 @@ combine_results <- function(results_list) {
   # Report missing data
   report_missing_data(all_summary)
 
-  # Create curve info summary
+  # Create curve info summary (now includes curve version and outlier info)
   curve_info <- data.frame(
     File = sapply(results_list, function(x) x$file_name),
     Bacterial_Target = sapply(results_list, function(x) x$bacterial_target),
+    Curve_Version = sapply(results_list, function(x) {
+      v <- x$standard_curve$curve_version
+      if (is.null(v)) "Original" else v
+    }),
     R_Squared = sapply(results_list, function(x) x$standard_curve$r_squared),
     Efficiency = sapply(results_list, function(x) x$standard_curve$efficiency),
     Slope = sapply(results_list, function(x) x$standard_curve$slope),
-    Intercept = sapply(results_list, function(x) x$standard_curve$intercept)
+    Intercept = sapply(results_list, function(x) x$standard_curve$intercept),
+    Outliers_Removed = sapply(results_list, function(x) {
+      n <- x$standard_curve$n_outliers
+      if (is.null(n)) 0 else n
+    })
   )
 
   return(list(
@@ -575,6 +652,36 @@ GROUP_COLORS <- c(
   "Recovered" = "#4A90A4",
   "Pool" = "#2A9D8F"
 )
+
+#' Create a consistent log10 y-axis scale
+#' Computes shared limits across all data for comparable plots
+#'
+#' @param data Summary data frame
+#' @param padding Padding factor for limits (default 2 = half decade below/above)
+#' @return scale_y_log10 object
+consistent_y_scale <- function(data, padding = 2) {
+  all_values <- data$Mean_Copy_Number[!is.na(data$Mean_Copy_Number) & data$Mean_Copy_Number > 0]
+
+  if (length(all_values) == 0) {
+    return(scale_y_log10(labels = scales::scientific))
+  }
+
+  y_min <- min(all_values) / padding
+  y_max <- max(all_values) * padding
+
+  # Round to nearest power of 10 for clean limits
+  y_min <- 10^floor(log10(y_min))
+  y_max <- 10^ceiling(log10(y_max))
+
+  # Create clean breaks at each power of 10
+  breaks <- 10^seq(log10(y_min), log10(y_max))
+
+  scale_y_log10(
+    limits = c(y_min, y_max),
+    breaks = breaks,
+    labels = scales::scientific
+  )
+}
 
 #' Prepare plot data - handles slurry and filters vessels
 #' @param data Summary data frame
@@ -670,15 +777,15 @@ plot_individual_donors <- function(data, target, vessel = "both",
 
   if (log_scale) {
     p <- p +
-      scale_y_log10(labels = scales::scientific) +
+      consistent_y_scale(plot_data) +
       labs(y = "Copy Number (log scale)")
   }
 
   # Facet by vessel if showing both - only show panels with data
+  # Using shared y-axis for comparability across vessels
   if (vessel == "both" && length(unique(plot_data$Vessel)) > 1) {
-    p <- p + facet_wrap(~Vessel, ncol = 2, scales = "free_y")
+    p <- p + facet_wrap(~Vessel, ncol = 2)
   } else if (vessel == "both") {
-    # Add vessel to title if only one vessel has data
     v <- unique(plot_data$Vessel)[1]
     p <- p + labs(title = paste(target, "-", v, "- Individual Donors"))
   }
@@ -756,7 +863,7 @@ plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE, 
   p <- p +
     scale_color_manual(values = GROUP_COLORS) +
     scale_fill_manual(values = GROUP_COLORS) +
-    scale_y_log10(labels = scales::scientific) +
+    consistent_y_scale(plot_data) +
     scale_x_continuous(breaks = c(0, 1, 2, 3, 6, 8, 10, 13, 17, 20)) +
     labs(
       title = paste(target, "- Group Averages"),
@@ -774,9 +881,9 @@ plot_group_means <- function(data, target, vessel = "both", show_ribbon = TRUE, 
       panel.grid.minor = element_blank()
     )
 
-  # Facet by vessel if showing both - only show panels with data
+  # Facet by vessel - shared y-axis for comparability
   if (vessel == "both" && length(unique(group_summary$Vessel)) > 1) {
-    p <- p + facet_wrap(~Vessel, ncol = 2, scales = "free_y")
+    p <- p + facet_wrap(~Vessel, ncol = 2)
   } else if (vessel == "both") {
     v <- unique(group_summary$Vessel)[1]
     p <- p + labs(title = paste(target, "-", v, "- Group Averages"))
@@ -814,9 +921,9 @@ plot_all_targets <- function(data, vessel = "V1") {
     geom_line(linewidth = 1.0) +
     geom_point(size = 2) +
     scale_color_manual(values = colors_to_use) +
-    scale_y_log10(labels = scales::scientific) +
+    consistent_y_scale(plot_data) +
     scale_x_continuous(breaks = c(0, 3, 6, 10, 13, 17, 20)) +
-    facet_wrap(~Bacterial_Target, scales = "free_y", ncol = 3) +
+    facet_wrap(~Bacterial_Target, ncol = 3) +
     labs(
       title = paste("All Bacterial Targets -", vessel),
       x = "Day",
@@ -871,7 +978,7 @@ plot_slurry_comparison <- function(data, target = NULL) {
                       ymax = Mean_Copy_Number + SD_Copy_Number),
                   width = 0.2, linewidth = 0.7) +
     scale_fill_manual(values = colors_to_use) +
-    scale_y_log10(labels = scales::scientific) +
+    consistent_y_scale(plot_data) +
     labs(
       title = if(is.null(target)) "Baseline (Slurry) Comparison - All Targets"
               else paste(target, "- Baseline (Slurry) Comparison"),
@@ -886,9 +993,9 @@ plot_slurry_comparison <- function(data, target = NULL) {
       panel.grid.minor = element_blank()
     )
 
-  # Facet by target if showing all
+  # Facet by target if showing all - shared y-axis
   if (is.null(target) && length(unique(plot_data$Bacterial_Target)) > 1) {
-    p <- p + facet_wrap(~Bacterial_Target, scales = "free_y", ncol = 3)
+    p <- p + facet_wrap(~Bacterial_Target, ncol = 3)
   }
 
   return(p)
@@ -960,7 +1067,10 @@ plot_start_vs_end <- function(data, target, vessel = "V1", end_day = NULL) {
     # End point (triangle)
     geom_point(aes(x = End_Copy, color = Donor), size = 4, shape = 17) +
     scale_color_manual(values = colors_to_use) +
-    scale_x_log10(labels = scales::scientific) +
+    scale_x_log10(
+      labels = scales::scientific,
+      breaks = scales::trans_breaks("log10", function(x) 10^x)
+    ) +
     labs(
       title = paste(target, "-", vessel, ": Day 0 vs Day", end_day),
       subtitle = "Circle = Start (Day 0), Triangle = End",
