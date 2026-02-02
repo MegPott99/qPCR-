@@ -1173,10 +1173,13 @@ plot_slurry_comparison <- function(data, target = NULL) {
   colors_to_use <- DONOR_COLORS[donors_present]
   colors_to_use <- colors_to_use[!is.na(colors_to_use)]
 
-  # Order donors by group
+  # Order donors by group and handle NA SD values
   plot_data <- plot_data %>%
-    mutate(Donor = factor(Donor, levels = c("LC01", "LC02", "LC03", "LC04",
-                                             "Rec01", "Rec02", "Rec03", "POOL")))
+    mutate(
+      Donor = factor(Donor, levels = c("LC01", "LC02", "LC03", "LC04",
+                                        "Rec01", "Rec02", "Rec03", "POOL")),
+      SD_Copy_Number = ifelse(is.na(SD_Copy_Number), 0, SD_Copy_Number)
+    )
 
   p <- ggplot(plot_data, aes(x = Donor, y = Mean_Copy_Number, fill = Donor)) +
     geom_col(width = 0.7, color = "black", linewidth = 1.0) +
@@ -1188,12 +1191,14 @@ plot_slurry_comparison <- function(data, target = NULL) {
     labs(
       title = if(is.null(target)) "Baseline (Slurry) Comparison - All Targets"
               else paste(target, "- Baseline (Slurry) Comparison"),
+      subtitle = "Error bars = SD across technical replicates",
       x = "Donor",
       y = "Copy Number (log scale)"
     ) +
     theme_bw() +
     theme(
       plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 9, color = "gray40"),
       axis.text.x = element_text(angle = 45, hjust = 1),
       legend.position = "none",
       panel.grid.minor = element_blank()
