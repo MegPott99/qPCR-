@@ -22,6 +22,10 @@ library(broom)
 STANDARD_START_CONC <- 5e9
 DILUTION_FACTOR <- 10
 
+# Technical replicate outlier detection settings
+# If a replicate Ct differs from the median of others by more than this threshold, it's removed
+MAX_CT_DIFF <- 1.0  # Maximum allowed Ct difference from median
+
 # Define donor groups for analysis
 DONOR_GROUPS <- list(
 
@@ -288,6 +292,128 @@ calculate_copy_numbers <- function(ct_values, slope, intercept) {
 }
 
 # =============================================================================
+# TECHNICAL REPLICATE OUTLIER DETECTION
+# =============================================================================
+
+#' Detect and remove technical replicate outliers based on Ct difference
+#'
+#' For each sample, checks if any replicate Ct value is too far from the median.
+#' - For 2 replicates: Flags if difference > threshold (removes BOTH as unreliable)
+#' - For 3+ replicates: Removes values > threshold from median of others
+#'
+#' @param data Data frame with Sample name and Ct columns
+#' @param max_diff Maximum allowed Ct difference from median (default MAX_CT_DIFF)
+#' @return List with cleaned data and report of removed replicates
+detect_replicate_outliers <- function(data, max_diff = MAX_CT_DIFF) {
+
+  removed_report <- data.frame(
+    Sample_Name = character(),
+    Well = character(),
+    Ct_Value = numeric(),
+    Median_Ct = numeric(),
+    Ct_Difference = numeric(),
+    Reason = character(),
+    stringsAsFactors = FALSE
+  )
+
+  samples <- unique(data$`Sample name`)
+  rows_to_remove <- c()
+
+  for (sample in samples) {
+    sample_rows <- which(data$`Sample name` == sample)
+    sample_data <- data[sample_rows, ]
+    cts <- sample_data$Ct
+    n_reps <- length(cts)
+
+    if (n_reps < 2) next  # Can't detect outliers with 1 replicate
+
+    if (n_reps == 2) {
+      # For 2 replicates: flag if difference > threshold
+      ct_diff <- abs(cts[1] - cts[2])
+
+      if (ct_diff > max_diff) {
+        # Both replicates are unreliable - remove both
+        rows_to_remove <- c(rows_to_remove, sample_rows)
+
+        for (j in 1:2) {
+          removed_report <- rbind(removed_report, data.frame(
+            Sample_Name = sample,
+            Well = sample_data$Well[j],
+            Ct_Value = cts[j],
+            Median_Ct = mean(cts),  # For 2 reps, median = mean
+            Ct_Difference = ct_diff / 2,  # Each differs from midpoint
+            Reason = sprintf("2 replicates differ by %.2f Ct (>%.1f)", ct_diff, max_diff),
+            stringsAsFactors = FALSE
+          ))
+        }
+      }
+
+    } else {
+      # For 3+ replicates: identify outliers relative to median of others
+      for (j in seq_along(cts)) {
+        other_cts <- cts[-j]
+        median_others <- median(other_cts)
+        diff_from_median <- abs(cts[j] - median_others)
+
+        if (diff_from_median > max_diff) {
+          rows_to_remove <- c(rows_to_remove, sample_rows[j])
+
+          removed_report <- rbind(removed_report, data.frame(
+            Sample_Name = sample,
+            Well = sample_data$Well[j],
+            Ct_Value = cts[j],
+            Median_Ct = median_others,
+            Ct_Difference = diff_from_median,
+            Reason = sprintf("Ct differs by %.2f from median of others (>%.1f)",
+                            diff_from_median, max_diff),
+            stringsAsFactors = FALSE
+          ))
+        }
+      }
+    }
+  }
+
+  # Remove outlier rows
+  if (length(rows_to_remove) > 0) {
+    cleaned_data <- data[-rows_to_remove, ]
+  } else {
+    cleaned_data <- data
+  }
+
+  return(list(
+    cleaned_data = cleaned_data,
+    removed = removed_report,
+    n_removed = nrow(removed_report),
+    samples_affected = length(unique(removed_report$Sample_Name))
+  ))
+}
+
+#' Print outlier removal report
+#'
+#' @param outlier_result Result from detect_replicate_outliers()
+#' @param file_name Name of file (for display)
+report_outliers <- function(outlier_result, file_name = "") {
+
+  if (outlier_result$n_removed == 0) {
+    cat("  No technical replicate outliers detected (threshold:", MAX_CT_DIFF, "Ct)\n")
+    return(invisible(NULL))
+  }
+
+  cat(sprintf("  OUTLIERS REMOVED: %d replicates from %d samples (threshold: %.1f Ct)\n",
+              outlier_result$n_removed,
+              outlier_result$samples_affected,
+              MAX_CT_DIFF))
+
+  # Show details for each affected sample
+  for (i in seq_len(nrow(outlier_result$removed))) {
+    row <- outlier_result$removed[i, ]
+    cat(sprintf("    - %s (Well %s): Ct=%.2f, Median=%.2f, Diff=%.2f\n",
+                row$Sample_Name, row$Well, row$Ct_Value,
+                row$Median_Ct, row$Ct_Difference))
+  }
+}
+
+# =============================================================================
 # FILE PROCESSING FUNCTIONS
 # =============================================================================
 
@@ -395,6 +521,26 @@ process_qpcr_file <- function(file_path) {
     mutate(Ct = as.numeric(as.character(Ct))) %>%
     filter(!is.na(Ct) & !is.infinite(Ct))
 
+  # Detect and remove technical replicate outliers
+  outlier_result <- detect_replicate_outliers(sample_data, max_diff = MAX_CT_DIFF)
+  report_outliers(outlier_result, file_name = basename(file_path))
+
+  # Use cleaned data (outliers removed)
+  sample_data <- outlier_result$cleaned_data
+
+  # Check if we still have data after outlier removal
+  if (nrow(sample_data) == 0) {
+    cat("  WARNING: No data remaining after outlier removal\n")
+    return(list(
+      file_name = basename(file_path),
+      bacterial_target = bacterial_target,
+      standard_curve = curve,
+      samples = NULL,
+      summary = NULL,
+      outliers_removed = outlier_result$removed
+    ))
+  }
+
   # Calculate copy numbers for each Ct value
   copy_results <- calculate_copy_numbers(sample_data$Ct, curve$slope, curve$intercept)
 
@@ -434,7 +580,9 @@ process_qpcr_file <- function(file_path) {
     bacterial_target = bacterial_target,
     standard_curve = curve,
     individual_results = sample_results,
-    summary = summary_stats
+    summary = summary_stats,
+    outliers_removed = outlier_result$removed,
+    n_outliers_removed = outlier_result$n_removed
   ))
 }
 
@@ -598,8 +746,30 @@ combine_results <- function(results_list) {
   # Combine all summaries
   all_summary <- bind_rows(lapply(results_list, function(x) x$summary))
 
+  # Combine all technical replicate outlier reports
+  all_outliers <- bind_rows(lapply(results_list, function(x) {
+    if (!is.null(x$outliers_removed) && nrow(x$outliers_removed) > 0) {
+      x$outliers_removed$Bacterial_Target <- x$bacterial_target
+      x$outliers_removed$Source_File <- x$file_name
+      return(x$outliers_removed)
+    }
+    return(NULL)
+  }))
+
   # Report missing data
   report_missing_data(all_summary)
+
+  # Report technical replicate outliers summary
+  if (!is.null(all_outliers) && nrow(all_outliers) > 0) {
+    cat("\n", paste(rep("-", 60), collapse = ""), "\n")
+    cat("TECHNICAL REPLICATE OUTLIERS SUMMARY\n")
+    cat(paste(rep("-", 60), collapse = ""), "\n")
+    cat(sprintf("  Total replicates removed: %d\n", nrow(all_outliers)))
+    cat(sprintf("  Samples affected: %d\n", length(unique(all_outliers$Sample_Name))))
+    cat(sprintf("  Ct difference threshold: %.1f\n", MAX_CT_DIFF))
+    cat("  (Full details saved to outliers CSV file)\n")
+    cat(paste(rep("-", 60), collapse = ""), "\n\n")
+  }
 
   # Create curve info summary (now includes curve version and outlier info)
   curve_info <- data.frame(
@@ -613,8 +783,12 @@ combine_results <- function(results_list) {
     Efficiency = sapply(results_list, function(x) x$standard_curve$efficiency),
     Slope = sapply(results_list, function(x) x$standard_curve$slope),
     Intercept = sapply(results_list, function(x) x$standard_curve$intercept),
-    Outliers_Removed = sapply(results_list, function(x) {
+    Std_Curve_Outliers = sapply(results_list, function(x) {
       n <- x$standard_curve$n_outliers
+      if (is.null(n)) 0 else n
+    }),
+    Tech_Rep_Outliers = sapply(results_list, function(x) {
+      n <- x$n_outliers_removed
       if (is.null(n)) 0 else n
     })
   )
@@ -622,7 +796,8 @@ combine_results <- function(results_list) {
   return(list(
     individual = all_individual,
     summary = all_summary,
-    curves = curve_info
+    curves = curve_info,
+    outliers = all_outliers
   ))
 }
 
@@ -1292,11 +1467,21 @@ save_results <- function(combined_results, output_dir = "analysis_results") {
   write_csv(wide_data, wide_file)
   cat("Saved:", wide_file, "\n")
 
+  # Save technical replicate outlier report (if any outliers were removed)
+  outliers_file <- NULL
+  if (!is.null(combined_results$outliers) && nrow(combined_results$outliers) > 0) {
+    outliers_file <- file.path(output_dir,
+                               paste0("technical_replicate_outliers_", timestamp, ".csv"))
+    write_csv(combined_results$outliers, outliers_file)
+    cat("Saved:", outliers_file, "\n")
+  }
+
   return(list(
     individual = individual_file,
     summary = summary_file,
     curves = curves_file,
-    wide = wide_file
+    wide = wide_file,
+    outliers = outliers_file
   ))
 }
 
