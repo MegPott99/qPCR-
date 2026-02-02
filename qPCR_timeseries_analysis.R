@@ -836,27 +836,26 @@ combine_results <- function(results_list) {
 # PLOTTING FUNCTIONS
 # =============================================================================
 
-# Custom color palette: Selected from user's palette
-# Using distinct colors across the full palette, avoiding beige/grey
+# High contrast color palette for donors
 DONOR_COLORS <- c(
-  # Long COVID donors - varied colors from palette
-  "LC01" = "#1D3557",
-  "LC02" = "#C9787A",
-  "LC03" = "#7B68A6",
-  "LC04" = "#E07A5F",
-  # Recovered donors - varied colors from palette
-  "Rec01" = "#4A90A4",
-  "Rec02" = "#81B29A",
-  "Rec03" = "#264653",
-  # Pool - distinct teal
-  "POOL" = "#2A9D8F"
+  # Long COVID donors - warm colors
+  "LC01" = "#E41A1C",
+  "LC02" = "#FF7F00",
+  "LC03" = "#984EA3",
+  "LC04" = "#A65628",
+  # Recovered donors - cool colors
+  "Rec01" = "#377EB8",
+  "Rec02" = "#4DAF4A",
+  "Rec03" = "#00CED1",
+  # Pool - distinct black
+  "POOL" = "#222222"
 )
 
 # Group colors (for group-level summaries)
 GROUP_COLORS <- c(
-  "Long COVID" = "#C9787A",
-  "Recovered" = "#4A90A4",
-  "Pool" = "#2A9D8F"
+  "Long COVID" = "#E41A1C",
+  "Recovered" = "#377EB8",
+  "Pool" = "#222222"
 )
 
 #' Create a consistent log10 y-axis scale
