@@ -230,6 +230,12 @@ process_standard_curve <- function(data, file_name = "",
   cat(sprintf("    R² = %.4f | Efficiency = %.1f%% | Slope = %.3f\n",
               r2_original, efficiency_original, slope_original))
 
+  # Flag if curve quality is poor (R² < 0.98 or efficiency outside 90-110%)
+  quality_warning <- r2_original < 0.98 || efficiency_original < 90 || efficiency_original > 110
+  if (quality_warning) {
+    cat("    *** WARNING: Poor curve quality (R² < 0.98 or efficiency outside 90-110%) ***\n")
+  }
+
   if (has_outliers) {
     cat(sprintf("  Outlier-removed curve (%d points, removed Standard(s) %s):\n",
                 nrow(standards_clean), paste(outlier_standards, collapse = ", ")))
@@ -237,8 +243,13 @@ process_standard_curve <- function(data, file_name = "",
                 r2_clean, efficiency_clean, slope_clean))
     cat(sprintf("    Cook's distance threshold: %.4f (2/n)\n", cooks_threshold))
 
-    cat("  Choose curve: 1 = Original, 2 = Outlier-removed: ")
+    cat("  Choose: 1 = Original, 2 = Outlier-removed, 3 = SKIP this file: ")
     choice <- readline(prompt = "")
+
+    if (choice == "3") {
+      cat("  -> SKIPPING this file (bad standard curve)\n")
+      return(NULL)  # Return NULL to signal file should be skipped
+    }
 
     if (choice == "2") {
       cat("  -> Using outlier-removed curve\n")
@@ -257,6 +268,13 @@ process_standard_curve <- function(data, file_name = "",
     }
   } else {
     cat("  No outliers detected (Cook's distance, threshold = 2/n)\n")
+    cat("  Choose: 1 = Use this curve, 3 = SKIP this file: ")
+    choice <- readline(prompt = "")
+
+    if (choice == "3") {
+      cat("  -> SKIPPING this file (bad standard curve)\n")
+      return(NULL)
+    }
   }
 
   cat("  -> Using original curve\n")
@@ -502,6 +520,12 @@ process_qpcr_file <- function(file_path) {
   # Process standard curve (with Cook's distance outlier option)
   curve <- process_standard_curve(data, file_name = basename(file_path))
 
+  # Check if user chose to skip this file
+  if (is.null(curve)) {
+    cat("  FILE SKIPPED by user\n")
+    return(NULL)
+  }
+
   # Process experimental samples
   if (length(experimental) == 0) {
     cat("  No experimental samples found\n")
@@ -623,10 +647,14 @@ if (is.null(file_paths)) {
   # Process each file
   all_results <- list()
   failed <- c()
+  skipped <- c()
 
   for (i in seq_along(file_paths)) {
     tryCatch({
       result <- process_qpcr_file(file_paths[i])
+      if (is.null(result)) {
+        skipped <- c(skipped, basename(file_paths[i]))
+      }
       all_results[[i]] <- result
     }, error = function(e) {
       cat("  ERROR:", e$message, "\n")
@@ -635,14 +663,17 @@ if (is.null(file_paths)) {
     })
   }
 
-  # Remove failed files
+  # Remove failed/skipped files
   all_results <- all_results[!sapply(all_results, is.null)]
 
   cat("\n", paste(rep("=", 60), collapse = ""), "\n")
   cat("BATCH COMPLETE\n")
   cat(sprintf("  Successful: %d files\n", length(all_results)))
+  if (length(skipped) > 0) {
+    cat(sprintf("  Skipped (bad curve): %d files (%s)\n", length(skipped), paste(skipped, collapse = ", ")))
+  }
   if (length(failed) > 0) {
-    cat(sprintf("  Failed: %d files (%s)\n", length(failed), paste(failed, collapse = ", ")))
+    cat(sprintf("  Failed (error): %d files (%s)\n", length(failed), paste(failed, collapse = ", ")))
   }
 
   return(all_results)
@@ -1485,11 +1516,12 @@ save_results <- function(combined_results, output_dir = "analysis_results") {
   ))
 }
 
-#' Save all plots to PDF
+#' Save all plots to PNG
 #'
 #' @param combined_results Output from combine_results()
 #' @param output_dir Directory to save plots
-save_plots <- function(combined_results, output_dir = "analysis_results") {
+#' @param dpi Resolution in dots per inch (default 300)
+save_plots <- function(combined_results, output_dir = "analysis_results", dpi = 300) {
 
   if (!dir.exists(output_dir)) {
     dir.create(output_dir, recursive = TRUE)
@@ -1506,64 +1538,64 @@ save_plots <- function(combined_results, output_dir = "analysis_results") {
     # Individual donors - V1
     p <- plot_individual_donors(combined_results$summary, target, vessel = "V1")
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_V1_individuals_", timestamp, ".pdf")),
-             p, width = 10, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_V1_individuals_", timestamp, ".png")),
+             p, width = 10, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Individual donors - V3
     p <- plot_individual_donors(combined_results$summary, target, vessel = "V3")
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_V3_individuals_", timestamp, ".pdf")),
-             p, width = 10, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_V3_individuals_", timestamp, ".png")),
+             p, width = 10, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Individual donors - both vessels
     p <- plot_individual_donors(combined_results$summary, target, vessel = "both")
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_both_individuals_", timestamp, ".pdf")),
-             p, width = 12, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_both_individuals_", timestamp, ".png")),
+             p, width = 12, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Group means - both vessels
     p <- plot_group_means(combined_results$summary, target, vessel = "both")
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_group_means_", timestamp, ".pdf")),
-             p, width = 12, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_group_means_", timestamp, ".png")),
+             p, width = 12, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Slurry baseline comparison
     p <- plot_slurry_comparison(combined_results$summary, target)
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_slurry_baseline_", timestamp, ".pdf")),
-             p, width = 10, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_slurry_baseline_", timestamp, ".png")),
+             p, width = 10, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Start vs end fold change - both vessels
     p <- plot_start_vs_end_both_vessels(combined_results$summary, target)
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_fold_change_", timestamp, ".pdf")),
-             p, width = 12, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_fold_change_", timestamp, ".png")),
+             p, width = 12, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Start vs end dumbbell - V1
     p <- plot_start_vs_end(combined_results$summary, target, vessel = "V1")
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_V1_start_vs_end_", timestamp, ".pdf")),
-             p, width = 10, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_V1_start_vs_end_", timestamp, ".png")),
+             p, width = 10, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
 
     # Start vs end dumbbell - V3
     p <- plot_start_vs_end(combined_results$summary, target, vessel = "V3")
     if (!is.null(p)) {
-      ggsave(file.path(output_dir, paste0(target, "_V3_start_vs_end_", timestamp, ".pdf")),
-             p, width = 10, height = 6)
+      ggsave(file.path(output_dir, paste0(target, "_V3_start_vs_end_", timestamp, ".png")),
+             p, width = 10, height = 6, dpi = dpi)
       plots_saved <- plots_saved + 1
     }
   }
@@ -1573,23 +1605,23 @@ save_plots <- function(combined_results, output_dir = "analysis_results") {
 
   p <- plot_all_targets(combined_results$summary, "V1")
   if (!is.null(p)) {
-    ggsave(file.path(output_dir, paste0("ALL_targets_V1_", timestamp, ".pdf")),
-           p, width = 14, height = 10)
+    ggsave(file.path(output_dir, paste0("ALL_targets_V1_", timestamp, ".png")),
+           p, width = 14, height = 10, dpi = dpi)
     plots_saved <- plots_saved + 1
   }
 
   p <- plot_all_targets(combined_results$summary, "V3")
   if (!is.null(p)) {
-    ggsave(file.path(output_dir, paste0("ALL_targets_V3_", timestamp, ".pdf")),
-           p, width = 14, height = 10)
+    ggsave(file.path(output_dir, paste0("ALL_targets_V3_", timestamp, ".png")),
+           p, width = 14, height = 10, dpi = dpi)
     plots_saved <- plots_saved + 1
   }
 
   # Save slurry comparison for all targets
   p <- plot_slurry_comparison(combined_results$summary, target = NULL)
   if (!is.null(p)) {
-    ggsave(file.path(output_dir, paste0("ALL_slurry_baseline_", timestamp, ".pdf")),
-           p, width = 14, height = 10)
+    ggsave(file.path(output_dir, paste0("ALL_slurry_baseline_", timestamp, ".png")),
+           p, width = 14, height = 10, dpi = dpi)
     plots_saved <- plots_saved + 1
   }
 
