@@ -1636,6 +1636,54 @@ save_plots <- function(combined_results, output_dir = "analysis_results", dpi = 
 # MAIN WORKFLOW
 # =============================================================================
 
+#' Get all CSV files from a folder
+#'
+#' @param folder_path Path to folder containing CSV files
+#' @param pattern Optional regex pattern to filter files (default "*.csv")
+#' @return Vector of file paths
+get_files_from_folder <- function(folder_path, pattern = "\\.csv$") {
+
+  if (!dir.exists(folder_path)) {
+    stop("Folder does not exist: ", folder_path)
+  }
+
+  files <- list.files(folder_path, pattern = pattern, full.names = TRUE,
+                      ignore.case = TRUE)
+
+  if (length(files) == 0) {
+    stop("No CSV files found in: ", folder_path)
+  }
+
+  cat("Found", length(files), "CSV files in folder:\n")
+  for (f in files) {
+    cat("  -", basename(f), "\n")
+  }
+  cat("\n")
+
+  return(files)
+}
+
+#' Run analysis on all CSV files in a folder
+#'
+#' @param folder_path Path to folder containing CSV files
+#' @param output_dir Directory for output files (default: "analysis_results" in the input folder)
+#' @param save_outputs Whether to save CSV and plots
+#' @return List with all results
+run_folder <- function(folder_path, output_dir = NULL, save_outputs = TRUE) {
+
+  # Get all CSV files
+  file_paths <- get_files_from_folder(folder_path)
+
+  # Default output directory is inside the input folder
+
+if (is.null(output_dir)) {
+    output_dir <- file.path(folder_path, "analysis_results")
+  }
+
+  # Run the analysis
+  run_analysis(file_paths, output_dir, save_outputs)
+}
+
 #' Run complete analysis pipeline
 #'
 #' @param file_paths Vector of file paths (NULL to use dialog)
@@ -1707,10 +1755,13 @@ run_analysis <- function(file_paths = NULL, output_dir = "analysis_results",
 
 # To run the analysis:
 #
-# Option 1: Interactive file selection
+# Option 1: Process all CSV files in a folder (RECOMMENDED)
+#   results <- run_folder("path/to/your/data/folder")
+#
+# Option 2: Interactive file selection
 #   results <- run_analysis()
 #
-# Option 2: Specify files directly
+# Option 3: Specify files directly
 #   files <- c("path/to/file1.csv", "path/to/file2.csv")
 #   results <- run_analysis(files)
 #
